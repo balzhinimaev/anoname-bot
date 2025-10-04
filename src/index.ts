@@ -813,52 +813,62 @@ function requireBackendSecret(req: Request, res: Response, next: NextFunction) {
 }
 
 // Create Telegram Stars invoice link
-app.post('/monetization/stars/invoice', requireBackendSecret, async (req: Request, res: Response) => {
-  try {
-    if (!BOT_TOKEN) {
-      return res.status(503).json({ error: 'BOT_TOKEN not configured' });
-    }
-    const { itemKey, starCount } = req.body || {};
-    if (itemKey !== 'premium') {
-      return res.status(400).json({ error: 'Unsupported itemKey' });
-    }
-    const stars = Number(starCount);
-    if (!Number.isInteger(stars) || stars <= 0) {
-      return res.status(400).json({ error: 'Invalid starCount' });
-    }
-
-    const payload = {
-      t: 'stars',
-      itemKey,
-      starCount: stars,
-      v: 1,
-      ts: Date.now(),
-    };
-
-    const title = 'Premium подписка';
-    const description = 'Доступ к Premium функциям.';
-    const prices = [{ label: 'Premium', amount: stars }];
-
-    let url: string;
+app.post(
+  "/monetization/stars/invoice",
+  requireBackendSecret,
+  async (req: Request, res: Response) => {
     try {
-      url = await (bot.telegram as any).createInvoiceLink({
-        title,
-        description,
-        payload: JSON.stringify(payload),
-        currency: 'XTR',
-        prices,
-      });
-    } catch (err) {
-      console.error('[payments] Ошибка создания инвойса:', err instanceof Error ? err.message : err);
-      return res.status(502).json({ error: 'Failed to create invoice' });
-    }
+      if (!BOT_TOKEN) {
+        return res.status(503).json({ error: "BOT_TOKEN not configured" });
+      }
+      const { itemKey, starCount } = req.body || {};
+      if (itemKey !== "premium") {
+        return res.status(400).json({ error: "Unsupported itemKey" });
+      }
+      const stars = Number(starCount);
+      if (!Number.isInteger(stars) || stars <= 0) {
+        return res.status(400).json({ error: "Invalid starCount" });
+      }
 
-    return res.status(200).json({ url });
-  } catch (err) {
-    console.error('[payments] Внутренняя ошибка при создании инвойса:', err instanceof Error ? err.message : err);
-    return res.status(500).json({ error: 'Internal error' });
+      const payload = {
+        t: "stars",
+        itemKey,
+        starCount: stars,
+        v: 1,
+        ts: Date.now(),
+      };
+
+      const title = "Premium подписка";
+      const description = "Доступ к Premium функциям.";
+      const prices = [{ label: "Premium", amount: stars }];
+
+      let url: string;
+      try {
+        url = await (bot.telegram as any).createInvoiceLink({
+          title,
+          description,
+          payload: JSON.stringify(payload),
+          currency: "XTR",
+          prices,
+        });
+      } catch (err) {
+        console.error(
+          "[payments] Ошибка создания инвойса:",
+          err instanceof Error ? err.message : err
+        );
+        return res.status(502).json({ error: "Failed to create invoice" });
+      }
+
+      return res.status(200).json({ url });
+    } catch (err) {
+      console.error(
+        "[payments] Внутренняя ошибка при создании инвойса:",
+        err instanceof Error ? err.message : err
+      );
+      return res.status(500).json({ error: "Internal error" });
+    }
   }
-});
+);
 
 // Webhook endpoint
 app.post(TELEGRAM_WEBHOOK_PATH, verifyTelegramSecret, (req: Request, res: Response) => {
