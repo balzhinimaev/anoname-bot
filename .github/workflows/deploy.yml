@@ -12,6 +12,7 @@ concurrency:
 env:
   IMAGE_NAME: anoname-bot-tma
   VPS_APP_DIR: /opt/anoname-bot-tma
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   quality:
