@@ -16,6 +16,10 @@ const AUTO_SET_WEBHOOK = (process.env.AUTO_SET_WEBHOOK || 'false').toLowerCase()
 const PORT = Number(process.env.PORT || 7777);
 const API_BASE_URL = process.env.API_BASE_URL || '';
 const BOT_BACKEND_SECRET = process.env.BOT_BACKEND_SECRET || '';
+const PRELAUNCH_STATS_PATH = process.env.PRELAUNCH_STATS_PATH || '/api/telegram/prelaunch/stats';
+const LEADS_ADD_PATH = process.env.LEADS_ADD_PATH || '/api/leads/add';
+const LEADS_TMA_OPEN_PATH = process.env.LEADS_TMA_OPEN_PATH || '/api/leads/tma-open';
+const ENABLE_LEAD_TRACKING = (process.env.ENABLE_LEAD_TRACKING || 'true').toLowerCase() === 'true';
 const AB_SPLIT_A = Math.max(0, Math.min(100, Number(process.env.AB_SPLIT_A ?? '50')));
 const ENABLE_ANALYTICS = (process.env.ENABLE_ANALYTICS || 'true').toLowerCase() === 'true';
 
@@ -29,6 +33,8 @@ if (!BOT_TOKEN) {
 // Log API configuration for debugging
 console.log(`[startup] API_BASE_URL: ${API_BASE_URL || 'не задан'}`);
 console.log(`[startup] BOT_BACKEND_SECRET: ${BOT_BACKEND_SECRET ? 'задан' : 'не задан'}`);
+console.log(`[startup] PRELAUNCH_STATS_PATH: ${PRELAUNCH_STATS_PATH}`);
+console.log(`[startup] LEAD_TRACKING: ${ENABLE_LEAD_TRACKING ? 'on' : 'off'}`);
 
 // Create bot instance (no bot.launch())
 const bot = new Telegraf<Context>(BOT_TOKEN || '');
@@ -210,6 +216,84 @@ function parseStartPayload(payload?: string): { referralCode?: string; campaign?
   return { referralCode, campaign };
 }
 
+
+function buildApiUrl(apiPath: string): string {
+  const base = API_BASE_URL.replace(/\/+$/, '');
+  const path = apiPath.startsWith('/') ? apiPath : `/${apiPath}`;
+  return `${base}${path}`;
+}
+
+function parseLeadCampaignFromPayload(payload?: string): { campaign?: string; campaignId?: string } {
+  if (!payload) return {};
+
+  let raw = payload.trim();
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // ignore
+  }
+
+  const startappMatch = raw.match(/startapp=([^&]+)/i);
+  if (startappMatch?.[1]) {
+    raw = startappMatch[1];
+  }
+
+  const leadIndex = raw.toLowerCase().indexOf('lead');
+  if (leadIndex >= 0) {
+    raw = raw.slice(leadIndex);
+  }
+
+  raw = raw.replace(/^lead[:_\-]?/i, '');
+  const parts = raw.split(/[_:\-]/).filter(Boolean);
+  const campaign = parts[0]?.trim() || undefined;
+  const campaignId = campaign && /^[0-9a-fA-F]{24}$/.test(campaign) ? campaign : undefined;
+  return { campaign, campaignId };
+}
+
+async function addLead(telegramId: number | string): Promise<void> {
+  if (!ENABLE_LEAD_TRACKING || !API_BASE_URL || !BOT_BACKEND_SECRET) {
+    return;
+  }
+
+  const endpoint = buildApiUrl(LEADS_ADD_PATH);
+  try {
+    await postJsonWithRetry(endpoint, { telegramId: String(telegramId) }, {
+      'X-Bot-Secret': BOT_BACKEND_SECRET,
+      'X-API-Key': BOT_BACKEND_SECRET,
+    });
+  } catch (err) {
+    console.error('[leads] Ошибка addLead:', err instanceof Error ? err.message : err);
+  }
+}
+
+async function recordTmaOpen(
+  telegramId: number | string,
+  payload?: string,
+  campaign?: string,
+  campaignId?: string
+): Promise<void> {
+  if (!ENABLE_LEAD_TRACKING || !API_BASE_URL || !BOT_BACKEND_SECRET) {
+    return;
+  }
+
+  const endpoint = buildApiUrl(LEADS_TMA_OPEN_PATH);
+  const body: Record<string, unknown> = {
+    telegramId: String(telegramId),
+    payload,
+  };
+  if (campaign) body.campaign = campaign;
+  if (campaignId) body.campaignId = campaignId;
+
+  try {
+    await postJsonWithRetry(endpoint, body, {
+      'X-Bot-Secret': BOT_BACKEND_SECRET,
+      'X-API-Key': BOT_BACKEND_SECRET,
+    });
+  } catch (err) {
+    console.error('[leads] Ошибка tma-open:', err instanceof Error ? err.message : err);
+  }
+}
+
 type AnalyticsEvent = {
   name: string;
   telegramId?: number | string;
@@ -305,18 +389,15 @@ async function getPrelaunchStats(telegramId: number | string): Promise<{ totalCo
     return null;
   }
   
-  const endpoint = `${API_BASE_URL.replace(
-    /\/+$/,
-    ""
-  )}/rest_api/api/telegram/prelaunch/stats?telegramId=${telegramId}`;
+  const endpoint = `${buildApiUrl(PRELAUNCH_STATS_PATH)}?telegramId=${encodeURIComponent(String(telegramId))}`;
   console.log(`[prelaunch_stats] Запрос к: ${endpoint}`);
   
   try {
     const response = await fetch(endpoint, {
       method: 'GET',
-      headers: { 
+      headers: {
+        'X-Bot-Secret': BOT_BACKEND_SECRET,
         'X-API-Key': BOT_BACKEND_SECRET,
-        'x-bot-secret': BOT_BACKEND_SECRET,
         'Content-Type': 'application/json'
       },
     });
@@ -355,10 +436,16 @@ async function handleStartLogic(ctx: Context, payload?: string) {
   const userId = ctx.from?.id;
   const variant = assignVariant(userId ?? '0', AB_SPLIT_A);
   const { referralCode, campaign } = parseStartPayload(payload);
+  const leadCampaign = parseLeadCampaignFromPayload(payload);
 
   // Save user ID to file for future broadcast
   if (userId) {
     void addUserId(String(userId));
+    void addLead(userId);
+
+    if (payload && leadCampaign.campaign) {
+      void recordTmaOpen(userId, payload, leadCampaign.campaign, leadCampaign.campaignId);
+    }
   }
 
   // Get dynamic stats for available spots

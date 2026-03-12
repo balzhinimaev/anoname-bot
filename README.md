@@ -22,9 +22,14 @@ TELEGRAM_WEBHOOK_SECRET=your-strong-secret
 WEB_APP_URL=https://your-mini-app-url
 PORT=7777
 AUTO_SET_WEBHOOK=true
-API_BASE_URL=https://api.example.com
+API_BASE_URL=https://anoname.ru
 BOT_BACKEND_SECRET=your-backend-secret
 AB_SPLIT_A=50
+ENABLE_ANALYTICS=true
+ENABLE_LEAD_TRACKING=true
+PRELAUNCH_STATS_PATH=/api/telegram/prelaunch/stats
+LEADS_ADD_PATH=/api/leads/add
+LEADS_TMA_OPEN_PATH=/api/leads/tma-open
 ```
 
 3. Локальный запуск (dev):
@@ -63,6 +68,7 @@ curl -sS -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 - Команда `/start` отправляет приветствие и кнопку открытия Mini App (если указан `WEB_APP_URL`).
 - Команда `/help` показывает краткую справку.
 - Аналитика: при `/start` отправляется событие `bot_start_shown` с A/B вариантом и payload.
+- Лиды: при `/start` бот вызывает `/api/leads/add`, а при наличии payload формата `lead_*` дополнительно вызывает `/api/leads/tma-open`.
 
 ## Монетизация: Telegram Stars
 
@@ -88,11 +94,23 @@ Content-Type: application/json
 
 - Чтобы кнопка Mini App была в меню чата, в BotFather настройте: Menu Button → Web App → укажите тот же `WEB_APP_URL`.
 
+
+## Интеграция с anoname2
+
+По умолчанию бот ожидает backend на `API_BASE_URL` и вызывает:
+- `GET /api/telegram/prelaunch/stats`
+- `POST /api/analytics/bot-event`
+- `POST /api/monetization/stars/success`
+- `POST /api/leads/add`
+- `POST /api/leads/tma-open`
+
+Для всех защищённых endpoint используется `BOT_BACKEND_SECRET` (`X-API-Key` и `X-Bot-Secret`).
+
 ## 🚀 CI/CD Деплой
 
 ### Автоматический деплой на VPS
 
-При пуше в `main` ветку автоматически:
+При пуше в `master` (и `main`) ветку автоматически:
 1. Собирается Docker образ и пушится в GitHub Container Registry (GHCR)
 2. Подключается к VPS по SSH
 3. Создаётся папка `/opt/mvp-anoname-bot`
@@ -120,6 +138,11 @@ Content-Type: application/json
 - `API_BASE_URL` - URL API бэкенда
 - `BOT_BACKEND_SECRET` - секрет для API
 - `AB_SPLIT_A` - процент A/B тестов
+- `ENABLE_ANALYTICS` - включить/выключить отправку bot analytics
+- `ENABLE_LEAD_TRACKING` - включить/выключить интеграцию `/api/leads/*`
+- `PRELAUNCH_STATS_PATH` - путь stats endpoint (по умолчанию `/api/telegram/prelaunch/stats`)
+- `LEADS_ADD_PATH` - путь добавления лида (по умолчанию `/api/leads/add`)
+- `LEADS_TMA_OPEN_PATH` - путь фиксации открытия TMA (по умолчанию `/api/leads/tma-open`)
 - `APP_PORT` - порт приложения (по умолчанию 7777)
 
 ### Мониторинг

@@ -2,13 +2,41 @@ name: ci-cd
 
 on:
   push:
-    branches: ["master"]
+    branches: ["master", "main"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  VPS_APP_DIR: /opt/mvp-anoname-bot
+  IMAGE_NAME: anoname-bot-tma
+  VPS_APP_DIR: /opt/anoname-bot-tma
 
 jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
   build-and-push:
+    needs: quality
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -33,8 +61,8 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/anonamebot:latest
-            ghcr.io/${{ github.repository_owner }}/anonamebot:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           platforms: linux/amd64
 
   deploy:
@@ -54,26 +82,42 @@ jobs:
 
       - name: Create app directory and .env on VPS
         run: |
-          ENV_B64=$(printf "BOT_TOKEN=%s\nWEB_APP_URL=%s\nTELEGRAM_WEBHOOK_PATH=%s\nTELEGRAM_WEBHOOK_SECRET=%s\nBOT_WEBHOOK_URL=%s\nAUTO_SET_WEBHOOK=%s\nAPI_BASE_URL=%s\nBOT_BACKEND_SECRET=%s\nAB_SPLIT_A=%s\nPORT=%s\nFILE_ID=%s\nADMIN=%s\nNODE_ENV=production\n" "${{ secrets.BOT_TOKEN }}" "${{ secrets.WEB_APP_URL }}" "${{ secrets.TELEGRAM_WEBHOOK_PATH }}" "${{ secrets.TELEGRAM_WEBHOOK_SECRET }}" "${{ secrets.BOT_WEBHOOK_URL }}" "${{ secrets.AUTO_SET_WEBHOOK }}" "${{ secrets.API_BASE_URL }}" "${{ secrets.BOT_BACKEND_SECRET }}" "${{ secrets.AB_SPLIT_A }}" "${{ secrets.APP_PORT || '7777' }}" "${{ secrets.FILE_ID }}" "${{ secrets.ADMIN }}" | base64 -w0)
-          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "sudo mkdir -p ${{ env.VPS_APP_DIR }} && echo $ENV_B64 | base64 -d | sudo tee ${{ env.VPS_APP_DIR }}/.env > /dev/null"
+          APP_PORT="${{ secrets.APP_PORT || '7777' }}"
+          ENV_B64=$(printf "BOT_TOKEN=%s\nWEB_APP_URL=%s\nTELEGRAM_WEBHOOK_PATH=%s\nTELEGRAM_WEBHOOK_SECRET=%s\nBOT_WEBHOOK_URL=%s\nAUTO_SET_WEBHOOK=%s\nAPI_BASE_URL=%s\nBOT_BACKEND_SECRET=%s\nAB_SPLIT_A=%s\nENABLE_ANALYTICS=%s\nENABLE_LEAD_TRACKING=%s\nPRELAUNCH_STATS_PATH=%s\nLEADS_ADD_PATH=%s\nLEADS_TMA_OPEN_PATH=%s\nPORT=%s\nFILE_ID=%s\nADMIN=%s\nNODE_ENV=production\n" \
+            "${{ secrets.BOT_TOKEN }}" \
+            "${{ secrets.WEB_APP_URL }}" \
+            "${{ secrets.TELEGRAM_WEBHOOK_PATH }}" \
+            "${{ secrets.TELEGRAM_WEBHOOK_SECRET }}" \
+            "${{ secrets.BOT_WEBHOOK_URL }}" \
+            "${{ secrets.AUTO_SET_WEBHOOK || 'true' }}" \
+            "${{ secrets.API_BASE_URL }}" \
+            "${{ secrets.BOT_BACKEND_SECRET }}" \
+            "${{ secrets.AB_SPLIT_A || '50' }}" \
+            "${{ secrets.ENABLE_ANALYTICS || 'true' }}" \
+            "${{ secrets.ENABLE_LEAD_TRACKING || 'true' }}" \
+            "${{ secrets.PRELAUNCH_STATS_PATH || '/api/telegram/prelaunch/stats' }}" \
+            "${{ secrets.LEADS_ADD_PATH || '/api/leads/add' }}" \
+            "${{ secrets.LEADS_TMA_OPEN_PATH || '/api/leads/tma-open' }}" \
+            "$APP_PORT" \
+            "${{ secrets.FILE_ID }}" \
+            "${{ secrets.ADMIN }}" | base64 -w0)
+          ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "sudo mkdir -p ${{ env.VPS_APP_DIR }} && echo $ENV_B64 | base64 -d | sudo tee ${{ env.VPS_APP_DIR }}/.env > /dev/null"
 
-      - name: Log in to GHCR on VPS and run container
+      - name: Pull and restart container on VPS
         run: |
           APP_PORT="${{ secrets.APP_PORT || '7777' }}"
-          echo "Using port: $APP_PORT"
           ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "echo ${{ secrets.GITHUB_TOKEN }} | sudo docker login ghcr.io -u ${{ github.actor }} --password-stdin && \
-             sudo docker pull ghcr.io/${{ github.repository_owner }}/anonamebot:latest && \
-             sudo docker stop anonamebot || true && \
-             sudo docker rm -f anonamebot || true && \
+             sudo docker pull ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest && \
+             sudo docker stop ${{ env.IMAGE_NAME }} || true && \
+             sudo docker rm -f ${{ env.IMAGE_NAME }} || true && \
              sudo lsof -ti:$APP_PORT | xargs -r sudo kill -9 || true && \
-             sudo docker run -d --name anonamebot --restart=always --env-file ${{ env.VPS_APP_DIR }}/.env -p $APP_PORT:$APP_PORT ghcr.io/${{ github.repository_owner }}/anonamebot:latest"
+             sudo docker run -d --name ${{ env.IMAGE_NAME }} --restart=always --env-file ${{ env.VPS_APP_DIR }}/.env -p $APP_PORT:$APP_PORT ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest"
 
       - name: Health check
         run: |
-          echo "Waiting for application to start..."
-          sleep 30
+          sleep 20
           APP_PORT="${{ secrets.APP_PORT || '7777' }}"
-          echo "Health checking port: $APP_PORT"
           ssh -o StrictHostKeyChecking=no ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "if curl -f http://localhost:$APP_PORT/healthz; then echo '✅ Health check passed'; else echo '❌ Health check failed'; exit 1; fi"
+            "curl -f http://localhost:$APP_PORT/healthz && echo '✅ Health check passed'"
