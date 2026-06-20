@@ -3,6 +3,16 @@ import express, { Request, Response, NextFunction } from 'express';
 import { Telegraf, Context, Markup } from 'telegraf';
 import { promises as fs } from 'fs';
 import path from 'path';
+import crypto from 'crypto';
+
+/** Сравнение секретов в постоянное время (защита от timing-атак). */
+function safeEqual(a: string | undefined | null, b: string | undefined | null): boolean {
+  if (!a || !b) return false;
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 // Environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -876,11 +886,12 @@ app.get('/users', requireBackendSecret, async (_req: Request, res: Response) => 
 // Middleware to verify Telegram secret token on webhook path
 function verifyTelegramSecret(req: Request, res: Response, next: NextFunction) {
   const headerSecret = req.header('X-Telegram-Bot-Api-Secret-Token');
+  // Fail-closed: без заданного секрета вебхук отклоняем (не пропускаем без проверки).
   if (!TELEGRAM_WEBHOOK_SECRET) {
-    console.warn('[webhook] TELEGRAM_WEBHOOK_SECRET не задан, проверка заголовка пропущена');
-    return next();
+    console.error('[webhook] TELEGRAM_WEBHOOK_SECRET не задан — запрос отклонён');
+    return res.status(503).send('Not configured');
   }
-  if (!headerSecret || headerSecret !== TELEGRAM_WEBHOOK_SECRET) {
+  if (!safeEqual(headerSecret, TELEGRAM_WEBHOOK_SECRET)) {
     return res.status(401).send('Unauthorized');
   }
   return next();
@@ -893,7 +904,7 @@ function requireBackendSecret(req: Request, res: Response, next: NextFunction) {
     return res.status(503).json({ error: 'Not configured' });
   }
   const apiKey = req.header('X-API-Key') || req.header('x-api-key');
-  if (!apiKey || apiKey !== BOT_BACKEND_SECRET) {
+  if (!safeEqual(apiKey, BOT_BACKEND_SECRET)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   return next();
