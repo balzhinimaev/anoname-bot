@@ -4,6 +4,7 @@ import { Telegraf, Context, Markup } from 'telegraf';
 import { promises as fs } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { NativeChat } from './nativeChat';
 
 /** Сравнение секретов в постоянное время (защита от timing-атак). */
 function safeEqual(a: string | undefined | null, b: string | undefined | null): boolean {
@@ -530,6 +531,19 @@ async function handleStartLogic(ctx: Context, payload?: string) {
   });
 }
 
+// Opt-in native client; disabled until API has the additive bot/session endpoint.
+const nativeChat = process.env.ENABLE_NATIVE_CHAT === 'true' ? new NativeChat(bot, {
+  apiUrl: API_BASE_URL, secret: BOT_BACKEND_SECRET, webAppUrl: WEB_APP_URL,
+  stateFile: process.env.NATIVE_CHAT_STATE_FILE || path.join(path.dirname(USER_IDS_FILE), 'native-chat-state.json'),
+}) : undefined;
+const nativeReady = nativeChat ? nativeChat.start().then(() => true).catch(() => {
+  console.error('[native_chat] Startup failed; native updates disabled'); return false;
+}) : Promise.resolve(true);
+if (nativeChat) bot.use(async (ctx, next) => {
+  if (!await nativeReady) { if (ctx.chat?.type === 'private') await ctx.reply('Чат временно недоступен. Попробуйте позже.'); return; }
+  return nativeChat.middleware()(ctx, next);
+});
+
 // Commands
 bot.start(async (ctx) => {
   await handleStartLogic(ctx, ctx.startPayload);
@@ -995,13 +1009,7 @@ async function ensureWebhook() {
   }
   if (!BOT_TOKEN || !BOT_WEBHOOK_URL || !TELEGRAM_WEBHOOK_PATH || !TELEGRAM_WEBHOOK_SECRET) {
     console.warn('[startup] Недостаточно переменных окружения для автоматической установки вебхука.');
-    const fullUrl = `${BOT_WEBHOOK_URL || 'https://your-domain.com'}${TELEGRAM_WEBHOOK_PATH || '/telegram/webhook/your-path'}`;
-    console.warn('Вы можете установить вебхук вручную через curl:');
-    console.warn(
-      `curl -sS -X POST https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook ` +
-      `-H "Content-Type: application/json" ` +
-      `-d '{"url":"${fullUrl}","secret_token":"${TELEGRAM_WEBHOOK_SECRET || 'your-strong-secret'}","drop_pending_updates":true,"allowed_updates":["message","callback_query","chat_member","chat_join_request","pre_checkout_query"]}'`
-    );
+    console.warn('[startup] Проверьте BOT_TOKEN, BOT_WEBHOOK_URL, TELEGRAM_WEBHOOK_PATH и TELEGRAM_WEBHOOK_SECRET. Значения секретов не выводятся.');
     return;
   }
 
@@ -1009,7 +1017,7 @@ async function ensureWebhook() {
   try {
     await bot.telegram.setWebhook(url, {
       secret_token: TELEGRAM_WEBHOOK_SECRET,
-      drop_pending_updates: true,
+      drop_pending_updates: false,
       allowed_updates: ['message', 'callback_query', 'chat_member', 'chat_join_request', 'pre_checkout_query'],
     });
     console.log(`[startup] Webhook установлен: ${url}`);
@@ -1022,7 +1030,13 @@ async function ensureBotCommands() {
   if (!BOT_TOKEN) return;
   try {
     await bot.telegram.setMyCommands([
-      { command: 'start', description: 'Приветствие и кнопка WebApp' },
+      { command: 'start', description: 'Начать общение' },
+      ...(nativeChat ? [
+        { command: 'find', description: 'Найти собеседника' },
+        { command: 'stop', description: 'Остановить поиск или разговор' },
+        { command: 'next', description: 'Следующий собеседник' },
+        { command: 'settings', description: 'Настройки поиска' },
+      ] : []),
       { command: 'rating', description: 'Информация о рейтинговой системе' },
       { command: 'help', description: 'Краткая справка' },
     ]);
@@ -1053,7 +1067,8 @@ process.on('uncaughtException', (err) => {
 });
 
 // Graceful shutdown
-function shutdown(signal: string) {
+async function shutdown(signal: string) {
+  await nativeChat?.close().catch(() => {});
   console.log(`[shutdown] Получен сигнал ${signal}. Закрываю HTTP сервер...`);
   server.close((err) => {
     if (err) {
